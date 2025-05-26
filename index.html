@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Pohoda XML Converter</title>
+    <style>
+        body { 
+            font-family: Arial, sans-serif; 
+            max-width: 800px; 
+            margin: 50px auto; 
+            padding: 20px;
+            background: #f5f5f5;
+        }
+        .container {
+            background: white;
+            padding: 30px;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        h1 { color: #2c3e50; text-align: center; }
+        .file-input {
+            width: 100%;
+            padding: 10px;
+            margin: 10px 0;
+            border: 2px dashed #3498db;
+            border-radius: 5px;
+            text-align: center;
+        }
+        button {
+            background: #3498db;
+            color: white;
+            padding: 12px 30px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 16px;
+            width: 100%;
+        }
+        button:hover { background: #2980b9; }
+        .log {
+            background: #2c3e50;
+            color: #2ecc71;
+            padding: 15px;
+            border-radius: 5px;
+            font-family: monospace;
+            max-height: 300px;
+            overflow-y: auto;
+            margin-top: 20px;
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🏕️ Pohoda XML Converter</h1>
+        <p>Конвертер CSV файлов кемпинга в XML формат для программы Pohoda</p>
+        
+        <div class="file-input">
+            <input type="file" id="fileInput" accept=".txt,.csv">
+            <p>Выберите файл paste.txt или CSV файл</p>
+        </div>
+        
+        <button onclick="convertFile()">🔄 Конвертировать в XML</button>
+        
+        <div id="log" class="log"></div>
+    </div>
+
+    <script>
+        // =====================================
+        // ЛОГИРОВАНИЕ
+        // =====================================
+        function log(message) {
+            const logDiv = document.getElementById('log');
+            logDiv.style.display = 'block';
+            logDiv.innerHTML += message + '\n';
+            logDiv.scrollTop = logDiv.scrollHeight;
+            console.log(message);
+        }
+
+        // =====================================
+        // ГЕНЕРАТОР XML ДЛЯ POHODA
+        // =====================================
+        async function generatePohodaXML(fileContent) {
+            log('🚀 Начинаем генерацию XML для Pohoda...');
+            
+            try {
+                // ПАРСИНГ CSV
+                log('⚙️ Парсим CSV данные...');
+                const lines = fileContent.trim().split('\n');
+                const headers = lines[0].split(',').map(h => h.trim());
+                
+                const data = [];
+                for (let i = 1; i < lines.length; i++) {
+                    const values = lines[i].split(',');
+                    const row = {};
+                    headers.forEach((header, index) => {
+                        row[header] = values[index] ? values[index].trim() : '';
+                    });
+                    data.push(row);
+                }
+                
+                log('📊 Загружено записей: ' + data.length);
+                
+                // ГРУППИРОВКА ПО НОМЕРАМ ДОКУМЕНТОВ
+                log('📋 Группируем по номерам документов...');
+                const documents = {};
+                
+                data.forEach(row => {
+                    const number = row.number;
+                    if (number && row.sum && parseFloat(row.sum) > 0 && !row.stornoNumber) {
+                        if (!documents[number]) {
+                            documents[number] = [];
+                        }
+                        documents[number].push(row);
+                    }
+                });
+                
+                const validDocs = Object.keys(documents);
+                log('✅ Валидных документов: ' + validDocs.length);
+                
+                // СОЗДАНИЕ XML
+                log('🔧 Создаем XML структуру...');
+                
+                const timestamp = Date.now();
+                let xml = `<?xml version="1.0" encoding="UTF-8"?>
+<dat:dataPack id="IMPORT_${timestamp}" ico="12345678" application="StwPop" version="2.0" note="Import z CSV souboru"
+    xmlns:dat="http://www.stormware.cz/schema/version_2/data.xsd"
+    xmlns:inv="http://www.stormware.cz/schema/version_2/invoice.xsd" 
+    xmlns:typ="http://www.stormware.cz/schema/version_2/type.xsd">
+`;
+
+                let processedCount = 0;
+                
+                // ОБРАБОТКА КАЖДОГО ДОКУМЕНТА
+                validDocs.forEach(docNumber => {
+                    const items = documents[docNumber];
+                    const firstItem = items[0];
+                    
+                    // Конвертация даты из DD.MM.YYYY в YYYY-MM-DD
+                    const dateParts = firstItem.datetime.split(' ')[0].split('.');
+                    const isoDate = `${dateParts[2]}-${dateParts[1]}-${dateParts[0]}`;
+                    
+                    xml += `
+    <!-- Dokument č. ${docNumber} -->
+    <dat:dataPackItem id="${docNumber}" version="2.0">
+        <inv:invoice version="2.0">
+            <inv:invoiceHeader>
+                <inv:invoiceType>issuedInvoice</inv:invoiceType>
+                <inv:number>
+                    <typ:numberRequested>${docNumber}</typ:numberRequested>
+                </inv:number>
+                <inv:date>${isoDate}</inv:date>
+                <inv:dateAccounting>${isoDate}</inv:dateAccounting>
+                <inv:dateDue>${isoDate}</inv:dateDue>
+                <inv:text>Prodej</inv:text>
+                <inv:paymentType>
+                    <typ:paymentType>cash</typ:paymentType>
+                </inv:paymentType>
+                <inv:account>
+                    <typ:id>1</typ:id>
+                </inv:account>
+                <inv:symConst>0308</inv:symConst>
+            </inv:invoiceHeader>
+            <inv:invoiceDetail>`;
+                    
+                    let totalPrice = 0;
+                    
+                    // Добавляем каждую позицию документа
+                    items.forEach(item => {
+                        if (item.name && parseFloat(item.price || 0) > 0) {
+                            const unitPrice = parseFloat(item.price);
+                            const quantity = parseFloat(item.amount || 1);
+                            const linePrice = parseFloat(item.sumLine || unitPrice * quantity);
+                            const priceWithVAT = Math.round(linePrice * 1.21 * 100) / 100;
+                            
+                            totalPrice += linePrice;
+                            
+                            // Экранируем специальные символы
+                            const safeName = item.name
+                                .replace(/&/g, '&amp;')
+                                .replace(/</g, '&lt;')
+                                .replace(/>/g, '&gt;')
+                                .replace(/"/g, '&quot;')
+                                .replace(/'/g, '&#39;');
+                            
+                            xml += `
+                <inv:invoiceItem>
+                    <inv:text>${safeName}</inv:text>
+                    <inv:quantity>${quantity}</inv:quantity>
+                    <inv:unit>ks</inv:unit>
+                    <inv:coefficient>1</inv:coefficient>
+                    <inv:payVAT>true</inv:payVAT>
+                    <inv:rateVAT>high</inv:rateVAT>
+                    <inv:homeCurrency>
+                        <typ:unitPrice>${unitPrice}</typ:unitPrice>
+                        <typ:price>${linePrice}</typ:price>
+                        <typ:priceVAT>${priceWithVAT}</typ:priceVAT>
+                    </inv:homeCurrency>
+                </inv:invoiceItem>`;
+                        }
+                    });
+                    
+                    const totalPriceWithVAT = Math.round(totalPrice * 1.21 * 100) / 100;
+                    
+                    xml += `
+            </inv:invoiceDetail>
+            <inv:invoiceSummary>
+                <inv:homeCurrency>
+                    <typ:priceNone>0</typ:priceNone>
+                    <typ:priceLow>0</typ:priceLow>
+                    <typ:priceLowVAT>0</typ:priceLowVAT>
+                    <typ:priceHigh>${totalPrice}</typ:priceHigh>
+                    <typ:priceHighVAT>${totalPriceWithVAT}</typ:priceHighVAT>
+                    <typ:round>
+                        <typ:priceRound>0</typ:priceRound>
+                    </typ:round>
+                </inv:homeCurrency>
+            </inv:invoiceSummary>
+        </inv:invoice>
+    </dat:dataPackItem>`;
+                    
+                    processedCount++;
+                });
+                
+                xml += `
+
+</dat:dataPack>`;
+                
+                // РЕЗУЛЬТАТ
+                log('🎉 Генерация завершена!');
+                log('📄 Обработано документов: ' + processedCount);
+                log('📁 Размер XML файла: ' + Math.round(xml.length / 1024) + ' KB');
+                
+                return {
+                    xmlContent: xml,
+                    processedDocuments: processedCount,
+                    totalSize: xml.length
+                };
+                
+            } catch (error) {
+                log('❌ Ошибка генерации: ' + error.message);
+                throw error;
+            }
+        }
+
+        // =====================================
+        // ФУНКЦИЯ СКАЧИВАНИЯ ФАЙЛА
+        // =====================================
+        function downloadXML(xmlContent, fileName = 'pohoda_import.xml') {
+            log('💾 Скачиваем файл: ' + fileName);
+            
+            const blob = new Blob([xmlContent], { 
+                type: 'application/xml;charset=utf-8' 
+            });
+            
+            const link = document.createElement('a');
+            link.href = URL.createObjectURL(blob);
+            link.download = fileName;
+            
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            
+            URL.revokeObjectURL(link.href);
+            
+            log('✅ Файл скачан успешно!');
+        }
+
+        // =====================================
+        // ОСНОВНАЯ ФУНКЦИЯ КОНВЕРТАЦИИ
+        // =====================================
+        async function convertFile() {
+            try {
+                const fileInput = document.getElementById('fileInput');
+                const file = fileInput.files[0];
+                
+                if (!file) {
+                    alert('⚠️ Пожалуйста, выберите файл!');
+                    return;
+                }
+                
+                log('🔄 Запускаем конвертацию файла: ' + file.name);
+                
+                // Читаем файл
+                const fileContent = await new Promise((resolve, reject) => {
+                    const reader = new FileReader();
+                    reader.onload = e => resolve(e.target.result);
+                    reader.onerror = reject;
+                    reader.readAsText(file, 'UTF-8');
+                });
+                
+                // Генерируем XML
+                const result = await generatePohodaXML(fileContent);
+                
+                // Скачиваем файл
+                const outputFileName = `pohoda_import_${new Date().toISOString().slice(0,10)}.xml`;
+                downloadXML(result.xmlContent, outputFileName);
+                
+                log('🏁 Конвертация завершена успешно!');
+                log('📊 Статистика:');
+                log('   - Документов: ' + result.processedDocuments);
+                log('   - Размер файла: ' + Math.round(result.totalSize / 1024) + ' KB');
+                
+            } catch (error) {
+                log('💥 Ошибка конвертации: ' + error.message);
+                alert('Ошибка: ' + error.message);
+            }
+        }
+    </script>
+</body>
+</html>
